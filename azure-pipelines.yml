@@ -1,0 +1,103 @@
+# Starter pipeline
+# Start with a minimal pipeline that you can customize to build and deploy your code.
+# Add steps that build, run tests, deploy, and more:
+# https://aka.ms/yaml
+
+trigger:
+  - master
+
+pool:
+  vmImage: ubuntu-latest
+
+variables:
+  - name: DEV_ENV
+    value: dev
+  - name: QA_ENV
+    value: qa
+
+stages:
+  - stage: TerraformValidate
+    jobs:
+      - job: TerraformValidateJob
+        continueOnError: false
+        steps:
+          - task: PublishPipelineArtifact@1
+            displayName: publish artifacts
+            inputs:
+              targetPath: "$(System.DefaultWorkingDirectory)/terraform-manifests"
+              artifact: "terraform-manifest-artifact"
+              publishLocation: "pipeline"
+          - task: TerraformInstaller@2
+            displayName: terraform install
+            inputs:
+              terraformVersion: "latest"
+
+          - task: TerraformCLI@2
+            displayName: terraform init task
+            inputs:
+              command: 'init'
+              workingDirectory: '$(System.DefaultWorkingDirectory)/terraform-manifests'
+              backendType: 'azurerm'
+              backendServiceArm: 'terraform-aks-azurerm-svc-con-latest'
+              ensureBackend: true
+              backendAzureRmResourceGroupName: 'terraform-storage-rg1'
+              backendAzureRmResourceGroupLocation: 'Central US'
+              backendAzureRmStorageAccountName: 'varunterraformstorageo'
+              backendAzureRmContainerName: 'tfstates'
+              backendAzureRmKey: 'aks-base.tfstate'
+              allowTelemetryCollection: false
+
+          - task: TerraformCLI@2
+            displayName: terraform validate stage
+            inputs:
+              command: "validate"
+              workingDirectory: "$(System.DefaultWorkingDirectory)/terraform-manifests"
+              allowTelemetryCollection: false
+
+  - stage: DeployAKSClusters
+    jobs:
+      - deployment: DeployDevAKSCluster
+        displayName: DeployDevAKSCluster
+        pool:
+          vmImage: "ubuntu-latest"
+        environment: $(DEV_ENV)
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - task: DownloadSecureFile@1
+                  displayName: Download SSH Key
+                  name: sshkey
+                  inputs:
+                    secureFile: "id_rsa.pub"
+                - task: TerraformCLI@0
+                  displayName: Terraform Init
+                  inputs:
+                    command: 'init'
+                    workingDirectory: '$(Pipeline.Workspace)/terraform-manifest-artifact'
+                    backendType: 'azurerm'
+                    backendServiceArm: 'terraform-aks-azurerm-svc-con-latest'
+                    backendAzureRmResourceGroupName: 'terraform-storage-rg1'
+                    backendAzureRmStorageAccountName: 'varunterraformstorageo'
+                    backendAzureRmContainerName: 'tfstates'
+                    backendAzureRmKey: 'aks-$(DEV_ENV).tfstate'
+                    allowTelemetryCollection: false
+                - task: TerraformCLI@0
+                  displayName: Terraform Plan
+                  inputs:
+                    command: "plan"
+                    workingDirectory: "$(Pipeline.Workspace)/terraform-manifest-artifact"
+                    environmentServiceName: "terraform-aks-azurerm-svc-con-latest"
+                    commandOptions: "-var ssh_public_key=$(sshkey.secureFilePath) -var environment=$(DEV_ENV) -out $(Pipeline.Workspace)/terraform-manifest-artifact/$(DEV_ENV)-$(Build.BuildId).out"
+                    allowTelemetryCollection: false
+                - task: TerraformCLI@0
+                  displayName: Terraform Apply
+                  inputs:
+                    command: "apply"
+                    workingDirectory: "$(Pipeline.Workspace)/terraform-manifest-artifact"
+                    environmentServiceName: "terraform-aks-azurerm-svc-con-latest"
+                    commandOptions: "$(Pipeline.Workspace)/terraform-manifest-artifact/$(DEV_ENV)-$(Build.BuildId).out"
+                    allowTelemetryCollection: false
+
+      
+
